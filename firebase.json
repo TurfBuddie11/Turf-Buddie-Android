@@ -1,0 +1,23 @@
+{
+    "flutter": {
+        "platforms": {
+            "android": {
+                "default": {
+                    "projectId": "turf-buddies",
+                    "appId": "1:672271550387:android:3575eaffe414400a6d2dc6",
+                    "fileOutput": "android/app/google-services.json"
+                }
+            },
+            "dart": {
+                "lib/firebase_options.dart": {
+                    "projectId": "turf-buddies",
+                    "configurations": {
+                        "android": "1:672271550387:android:3575eaffe414400a6d2dc6",
+                        "ios": "1:672271550387:ios:a49a249fce7a4d526d2dc6",
+                        "web": "1:672271550387:web:8efab75756c94a226d2dc6"
+                    }
+                }
+            }
+        }
+    }
+}
