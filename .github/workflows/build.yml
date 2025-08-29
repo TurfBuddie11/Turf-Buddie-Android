@@ -3,13 +3,16 @@ name: Flutter CI/CD
 on:
   push:
     branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -21,11 +24,19 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
+          cache: true
 
       - name: Install yq
         run: |
           sudo wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq
           sudo chmod +x /usr/bin/yq
+
+      - name: Verify keystore file exists
+        run: |
+          if [ ! -f "android/app/keystore.base64" ]; then
+            echo "Error: keystore.base64 file not found in android/app/"
+            exit 1
+          fi
 
       - name: Decode Keystore
         run: |
@@ -39,11 +50,16 @@ jobs:
           echo "storePassword=${{ secrets.STORE_PASSWORD }}" > android/key.properties
           echo "keyPassword=${{ secrets.KEY_PASSWORD }}" >> android/key.properties
           echo "keyAlias=turf-buddie-alias" >> android/key.properties
-          echo "storeFile=android/app/turf-buddie-key.jks" >> android/key.properties
+          echo "storeFile=turf-buddie-key.jks" >> android/key.properties
+          echo "Key properties created:"
           cat android/key.properties
 
       - name: Install dependencies
         run: flutter pub get
+
+      - name: Run tests (optional)
+        run: flutter test
+        continue-on-error: true
 
       - name: Build APK
         run: flutter build apk --release --no-tree-shake-icons
@@ -56,23 +72,37 @@ jobs:
           VERSION_CODE=$(echo $VERSION | cut -d'+' -f2)
           TAG="v${VERSION_NAME}"
           APK_NAME="tb_app_${VERSION_NAME}.apk"
+          
+          # Create output directory if it doesn't exist
+          mkdir -p build/app/outputs/flutter-apk/
+          
+          # Move and rename APK
           mv build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/${APK_NAME}"
+          
+          # Set outputs
           echo "version_name=${VERSION_NAME}" >> $GITHUB_OUTPUT
           echo "version_code=${VERSION_CODE}" >> $GITHUB_OUTPUT
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "apk_name=${APK_NAME}" >> $GITHUB_OUTPUT
+          
+          echo "Prepared release: ${TAG} with APK: ${APK_NAME}"
 
       - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Delete existing release/tag if it exists
+          gh release delete ${{ steps.prepare_release.outputs.tag }} --yes || true
+          git tag -d ${{ steps.prepare_release.outputs.tag }} || true
+          git push origin --delete ${{ steps.prepare_release.outputs.tag }} || true
+          
+          # Create new release
           gh release create ${{ steps.prepare_release.outputs.tag }} \
             --title "Release ${{ steps.prepare_release.outputs.version_name }}" \
-            --notes "Build ${{ steps.prepare_release.outputs.version_code }}" || true
-          gh release upload ${{ steps.prepare_release.outputs.tag }} \
+            --notes "Build ${{ steps.prepare_release.outputs.version_code }}" \
             "build/app/outputs/flutter-apk/${{ steps.prepare_release.outputs.apk_name }}"
 
-      - name: Install Firebase CLI and jq
+      - name: Install Firebase CLI
         run: |
           curl -sL https://firebase.tools | bash
           sudo apt-get update
@@ -82,10 +112,23 @@ jobs:
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
         run: |
-          firebase use YOUR_FIREBASE_PROJECT_ID --token $FIREBASE_TOKEN
+          # Replace YOUR_FIREBASE_PROJECT_ID with your actual project ID
+          firebase use default --token $FIREBASE_TOKEN
+          
+          # Get current remote config
           firebase remoteconfig:get -o template.json --token $FIREBASE_TOKEN
-          jq '.parameters.latest_version.defaultValue.value = "${{ steps.prepare_release.outputs.version_name }}"' template.json > temp.json
-          mv temp.json template.json
-          jq '.parameters.latest_apk_url.defaultValue.value = "https://github.com/${{ github.repository }}/releases/download/${{ steps.prepare_release.outputs.tag }}/${{ steps.prepare_release.outputs.apk_name }}"' template.json > temp.json
-          mv temp.json template.json
+          
+          # Update latest_version parameter
+          jq --arg version "${{ steps.prepare_release.outputs.version_name }}" \
+            '.parameters.latest_version.defaultValue.value = $version' template.json > temp1.json
+          
+          # Update latest_apk_url parameter
+          jq --arg url "https://github.com/${{ github.repository }}/releases/download/${{ steps.prepare_release.outputs.tag }}/${{ steps.prepare_release.outputs.apk_name }}" \
+            '.parameters.latest_apk_url.defaultValue.value = $url' temp1.json > temp2.json
+          
+          # Deploy updated config
+          mv temp2.json template.json
           firebase deploy --only remoteconfig --token $FIREBASE_TOKEN
+          
+          # Cleanup
+          rm -f temp1.json temp2.json template.json
