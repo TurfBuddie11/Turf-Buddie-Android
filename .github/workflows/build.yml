@@ -262,13 +262,13 @@ jobs:
           prerelease: false
           draft: false
 
-      # Send notifications (optional)
-      - name: Send Slack Notification
-        if: secrets.SLACK_WEBHOOK_URL != ''
-        run: |
-          curl -X POST -H 'Content-type: application/json' \
-            --data '{"text":"🚀 New release: Turf Buddie v${{ needs.version.outputs.version_name }} (${{ needs.version.outputs.version_code }}) is now available!\nDownload: https://github.com/${{ github.repository }}/releases/latest"}' \
-            ${{ secrets.SLACK_WEBHOOK_URL }}
+#      # Send notifications (optional)
+#      - name: Send Slack Notification
+#        if: secrets.SLACK_WEBHOOK_URL != ''
+#        run: |
+#          curl -X POST -H 'Content-type: application/json' \
+#            --data '{"text":"🚀 New release: Turf Buddie v${{ needs.version.outputs.version_name }} (${{ needs.version.outputs.version_code }}) is now available!\nDownload: https://github.com/${{ github.repository }}/releases/latest"}' \
+#            ${{ secrets.SLACK_WEBHOOK_URL }}
 
       # Cleanup
       - name: Cleanup
