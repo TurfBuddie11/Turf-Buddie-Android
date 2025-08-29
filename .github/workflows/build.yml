@@ -33,13 +33,39 @@ jobs:
       - name: Get Version Info
         id: version
         run: |
-          # Extract version from pubspec.yaml
-          VERSION_LINE=$(grep '^version:' pubspec.yaml)
-          VERSION_NAME=$(echo $VERSION_LINE | sed 's/version: //' | sed 's/+.*//')
-          VERSION_CODE=$(echo $VERSION_LINE | sed 's/.*+//')
+          # Check if pubspec.yaml exists
+          if [ ! -f "pubspec.yaml" ]; then
+            echo "Error: pubspec.yaml not found!"
+            exit 1
+          fi
           
-          # If no version code, use run number
-          if [ -z "$VERSION_CODE" ]; then
+          # Extract version from pubspec.yaml
+          VERSION_LINE=$(grep '^version:' pubspec.yaml || echo "")
+          
+          if [ -z "$VERSION_LINE" ]; then
+            # No version found, use defaults
+            VERSION_NAME="1.0.0"
+            VERSION_CODE=${{ github.run_number }}
+            echo "No version found in pubspec.yaml, using defaults"
+          else
+            VERSION_NAME=$(echo $VERSION_LINE | sed 's/version: //' | sed 's/+.*//')
+            VERSION_CODE=$(echo $VERSION_LINE | sed 's/.*+//')
+          
+            # If no version code after +, use run number
+            if [ "$VERSION_CODE" = "$VERSION_NAME" ]; then
+              VERSION_CODE=${{ github.run_number }}
+            fi
+          fi
+          
+          # Validate version format
+          if [[ ! $VERSION_NAME =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Warning: Version name '$VERSION_NAME' doesn't follow semver format"
+            VERSION_NAME="1.0.0"
+          fi
+          
+          # Ensure version code is numeric
+          if ! [[ "$VERSION_CODE" =~ ^[0-9]+$ ]]; then
+            echo "Warning: Version code '$VERSION_CODE' is not numeric, using run number"
             VERSION_CODE=${{ github.run_number }}
           fi
           
@@ -53,7 +79,7 @@ jobs:
           echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
           echo "should_release=$SHOULD_RELEASE" >> $GITHUB_OUTPUT
           
-          echo "Version: $VERSION_NAME ($VERSION_CODE)"
+          echo "Final Version: $VERSION_NAME ($VERSION_CODE)"
           echo "Should Release: $SHOULD_RELEASE"
 
       - name: Generate Changelog
@@ -116,10 +142,27 @@ jobs:
       - name: Install Dependencies
         run: flutter pub get
 
+      - name: Run Tests
+        run: flutter test
+
       - name: Update Version in Files
         run: |
+          # Debug: Show current version info
+          echo "Current pubspec.yaml version:"
+          grep "^version:" pubspec.yaml || echo "No version found in pubspec.yaml"
+          
+          echo "Version Name: ${{ needs.version.outputs.version_name }}"
+          echo "Version Code: ${{ needs.version.outputs.version_code }}"
+          
           # Update version in pubspec.yaml if needed
-          sed -i.bak "s/version: .*/version: ${{ needs.version.outputs.version_name }}+${{ needs.version.outputs.version_code }}/" pubspec.yaml
+          if grep -q "^version:" pubspec.yaml; then
+            sed -i.bak "s/version: .*/version: ${{ needs.version.outputs.version_name }}+${{ needs.version.outputs.version_code }}/" pubspec.yaml
+          else
+            echo "version: ${{ needs.version.outputs.version_name }}+${{ needs.version.outputs.version_code }}" >> pubspec.yaml
+          fi
+          
+          echo "Updated pubspec.yaml version:"
+          grep "^version:" pubspec.yaml
           
           # Create version info file for the app
           mkdir -p lib/config
@@ -141,9 +184,7 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          flutter build apk --release \
-            --build-name=${{ needs.version.outputs.version_name }} \
-            --build-number=${{ needs.version.outputs.version_code }}
+          flutter build apk --release --build-name=${{ needs.version.outputs.version_name }} --build-number=${{ needs.version.outputs.version_code }}
 
       - name: Build Release Bundle (AAB)
         env:
@@ -151,9 +192,7 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          flutter build appbundle --release \
-            --build-name=${{ needs.version.outputs.version_name }} \
-            --build-number=${{ needs.version.outputs.version_code }}
+          flutter build appbundle --release --build-name=${{ needs.version.outputs.version_name }} --build-number=${{ needs.version.outputs.version_code }}
 
       # Rename files with version
       - name: Rename Build Files
@@ -261,14 +300,6 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           prerelease: false
           draft: false
-
-#      # Send notifications (optional)
-#      - name: Send Slack Notification
-#        if: secrets.SLACK_WEBHOOK_URL != ''
-#        run: |
-#          curl -X POST -H 'Content-type: application/json' \
-#            --data '{"text":"🚀 New release: Turf Buddie v${{ needs.version.outputs.version_name }} (${{ needs.version.outputs.version_code }}) is now available!\nDownload: https://github.com/${{ github.repository }}/releases/latest"}' \
-#            ${{ secrets.SLACK_WEBHOOK_URL }}
 
       # Cleanup
       - name: Cleanup
