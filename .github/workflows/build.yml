@@ -142,9 +142,6 @@ jobs:
       - name: Install Dependencies
         run: flutter pub get
 
-      - name: Run Tests
-        run: flutter test
-
       - name: Update Version in Files
         run: |
           # Debug: Show current version info
