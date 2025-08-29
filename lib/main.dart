@@ -16,42 +16,32 @@ void main() async {
       WidgetsFlutterBinding.ensureInitialized();
   FlutterNativeSplash.preserve(widgetsBinding: widgetsFlutterBinding);
 
+  bool isLoggedIn = false;
   try {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
+    await FirebaseService.initialize();
 
     final FlutterSecureStorage storage = const FlutterSecureStorage();
-    await _requestPermissions(); // Request permissions before checking login status
+    await _requestPermissions();
     String? loggedIn = await storage.read(key: 'login');
-
-    FlutterNativeSplash.remove();
-
-    runApp(
-      MyApp(isLoggedIn: loggedIn == 'true'),
-    );
+    isLoggedIn = loggedIn == 'true';
   } catch (e) {
-    // Handle initialization errors
+    debugPrint('Initialization error: $e');
+  } finally {
     FlutterNativeSplash.remove();
-    runApp(
-      MyApp(isLoggedIn: false), // Default to not logged in on error
-    );
+    runApp(MyApp(isLoggedIn: isLoggedIn));
   }
 }
 
 Future<void> _requestPermissions() async {
   try {
-    // Request location permission
     var status = await Permission.location.status;
     if (status.isDenied || status.isPermanentlyDenied) {
-      // If permission is denied or permanently denied, request it
       await Permission.location.request();
     }
-    // You can add more permission requests here if needed
-    // For example, to request camera permission:
-    // await Permission.camera.request();
   } catch (e) {
-    // Handle permission request errors silently
     debugPrint('Permission request error: $e');
   }
 }
@@ -71,16 +61,20 @@ class _MyAppState extends State<MyApp> {
     _checkForUpdates();
   }
 
-  _checkForUpdates() async {
-    await Future.delayed(Duration(seconds: 2));
+  Future<void> _checkForUpdates() async {
+    await Future.delayed(const Duration(seconds: 2));
 
-    bool updateAvailable = await FirebaseService.checkForUpdate();
-    if (updateAvailable && mounted) {
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => UpdateDialog(),
-      );
+    try {
+      bool updateAvailable = await FirebaseService.checkForUpdate();
+      if (updateAvailable && mounted) {
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => const UpdateDialog(),
+        );
+      }
+    } catch (e) {
+      debugPrint('Update check error: $e');
     }
   }
 
@@ -89,7 +83,7 @@ class _MyAppState extends State<MyApp> {
     return ProviderScope(
       child: Sizer(builder: (context, orientation, deviceType) {
         return MaterialApp(
-          title: 'My App',
+          title: 'TurfBuddie',
           theme: ThemeData(
             scaffoldBackgroundColor: const Color(0xFFF5F5F5),
             appBarTheme: const AppBarTheme(

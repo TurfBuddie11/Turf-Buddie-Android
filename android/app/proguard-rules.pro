@@ -29,3 +29,6 @@
 -keepclasseswithmembers class * {
   public void onPayment*(...);
 }
+
+-keep class com.google.firebase.** { *; }
+-dontwarn com.google.firebase.**

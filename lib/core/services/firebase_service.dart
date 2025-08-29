@@ -17,8 +17,8 @@ class FirebaseService {
 
     // Set default values (Android only)
     await _remoteConfig!.setDefaults({
-      'force_update_version': '1.0.0',
-      'update_url_android': '',
+      'latest_version': '1.0.0', // Changed from force_update_version
+      'latest_apk_url': '', // Changed from update_url_android
       'update_message': 'A new version is available. Please update.',
     });
   }
@@ -29,7 +29,7 @@ class FirebaseService {
 
       PackageInfo packageInfo = await PackageInfo.fromPlatform();
       String currentVersion = packageInfo.version;
-      String remoteVersion = _remoteConfig!.getString('force_update_version');
+      String remoteVersion = _remoteConfig!.getString('latest_version'); // Changed from force_update_version
 
       return _isVersionGreater(remoteVersion, currentVersion);
     } catch (e) {
@@ -55,6 +55,6 @@ class FirebaseService {
   }
 
   static String getUpdateUrl() {
-    return _remoteConfig?.getString('update_url_android') ?? '';
+    return _remoteConfig?.getString('latest_apk_url') ?? ''; // Changed from update_url_android
   }
 }

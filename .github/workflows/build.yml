@@ -1,307 +1,86 @@
-name: "Build & Release Flutter App"
+name: Flutter CI/CD
 
 on:
-  pull_request:
-    branches:
-      - master
-      - main
   push:
-    branches:
-      - master
-      - main
-    tags:
-      - 'v*'
-
-env:
-  JAVA_VERSION: '17'
+    branches: [ master ]
 
 jobs:
-  # Job to determine version and check if we should build
-  version:
-    name: Determine Version
-    runs-on: ubuntu-latest
-    outputs:
-      version_name: ${{ steps.version.outputs.version_name }}
-      version_code: ${{ steps.version.outputs.version_code }}
-      should_release: ${{ steps.version.outputs.should_release }}
-      changelog: ${{ steps.changelog.outputs.changelog }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Get Version Info
-        id: version
-        run: |
-          # Check if pubspec.yaml exists
-          if [ ! -f "pubspec.yaml" ]; then
-            echo "Error: pubspec.yaml not found!"
-            exit 1
-          fi
-          
-          # Extract version from pubspec.yaml
-          VERSION_LINE=$(grep '^version:' pubspec.yaml || echo "")
-          
-          if [ -z "$VERSION_LINE" ]; then
-            # No version found, use defaults
-            VERSION_NAME="1.0.0"
-            VERSION_CODE=${{ github.run_number }}
-            echo "No version found in pubspec.yaml, using defaults"
-          else
-            VERSION_NAME=$(echo $VERSION_LINE | sed 's/version: //' | sed 's/+.*//')
-            VERSION_CODE=$(echo $VERSION_LINE | sed 's/.*+//')
-          
-            # If no version code after +, use run number
-            if [ "$VERSION_CODE" = "$VERSION_NAME" ]; then
-              VERSION_CODE=${{ github.run_number }}
-            fi
-          fi
-          
-          # Validate version format
-          if [[ ! $VERSION_NAME =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Warning: Version name '$VERSION_NAME' doesn't follow semver format"
-            VERSION_NAME="1.0.0"
-          fi
-          
-          # Ensure version code is numeric
-          if ! [[ "$VERSION_CODE" =~ ^[0-9]+$ ]]; then
-            echo "Warning: Version code '$VERSION_CODE' is not numeric, using run number"
-            VERSION_CODE=${{ github.run_number }}
-          fi
-          
-          # Check if this is a release (tag or main branch)
-          SHOULD_RELEASE="false"
-          if [[ "${{ github.ref }}" == refs/tags/* ]] || [[ "${{ github.ref }}" == "refs/heads/master" ]] || [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            SHOULD_RELEASE="true"
-          fi
-          
-          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
-          echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
-          echo "should_release=$SHOULD_RELEASE" >> $GITHUB_OUTPUT
-          
-          echo "Final Version: $VERSION_NAME ($VERSION_CODE)"
-          echo "Should Release: $SHOULD_RELEASE"
-
-      - name: Generate Changelog
-        id: changelog
-        if: steps.version.outputs.should_release == 'true'
-        run: |
-          # Generate changelog from commits since last tag
-          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [ -z "$LAST_TAG" ]; then
-            CHANGELOG=$(git log --pretty=format:"- %s" --since="1 week ago")
-          else
-            CHANGELOG=$(git log --pretty=format:"- %s" ${LAST_TAG}..HEAD)
-          fi
-          
-          # Escape newlines for GitHub output
-          CHANGELOG="${CHANGELOG//'%'/'%25'}"
-          CHANGELOG="${CHANGELOG//$'\n'/'%0A'}"
-          CHANGELOG="${CHANGELOG//$'\r'/'%0D'}"
-          
-          echo "changelog=$CHANGELOG" >> $GITHUB_OUTPUT
-
-  # Build job
   build:
-    name: Build Flutter App
-    runs-on: macos-latest
-    needs: version
-    if: needs.version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      # Setup Firebase CLI for Remote Config updates
-      - name: Setup Firebase CLI
-        run: |
-          curl -sL https://firebase.tools | bash
-          echo "${{ secrets.FIREBASE_SERVICE_ACCOUNT }}" > firebase-service-account.json
-          export GOOGLE_APPLICATION_CREDENTIALS="./firebase-service-account.json"
-          firebase --version
-
-      # Decode the keystore file from GitHub Secrets
-      - name: Decode Keystore
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-        run: |
-          echo $KEYSTORE_BASE64 | base64 -d > android/app/turf-buddie-key.jks
-
-      - name: Setup Java
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
-          java-version: ${{ env.JAVA_VERSION }}
+          java-version: '17'
+          distribution: 'temurin'
 
-      - name: Setup Flutter
+      - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-          architecture: x64
-          cache: true
 
-      - name: Install Dependencies
+      - name: Install yq
+        run: |
+          sudo wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq
+          sudo chmod +x /usr/bin/yq
+
+      - name: Decode Keystore
+        run: base64 -d android/app/keystore.base64 > android/app/turf-buddie-key.jks
+
+      - name: Create key.properties
+        run: |
+          echo "storePassword=${{ secrets.STORE_PASSWORD }}" > android/key.properties
+          echo "keyPassword=${{ secrets.KEY_PASSWORD }}" >> android/key.properties
+          echo "keyAlias=turf-buddie-alias" >> android/key.properties
+          echo "storeFile=app/turf-buddie-key.jks" >> android/key.properties
+
+      - name: Install dependencies
         run: flutter pub get
 
-      - name: Update Version in Files
-        run: |
-          # Debug: Show current version info
-          echo "Current pubspec.yaml version:"
-          grep "^version:" pubspec.yaml || echo "No version found in pubspec.yaml"
-          
-          echo "Version Name: ${{ needs.version.outputs.version_name }}"
-          echo "Version Code: ${{ needs.version.outputs.version_code }}"
-          
-          # Update version in pubspec.yaml if needed
-          if grep -q "^version:" pubspec.yaml; then
-            sed -i.bak "s/version: .*/version: ${{ needs.version.outputs.version_name }}+${{ needs.version.outputs.version_code }}/" pubspec.yaml
-          else
-            echo "version: ${{ needs.version.outputs.version_name }}+${{ needs.version.outputs.version_code }}" >> pubspec.yaml
-          fi
-          
-          echo "Updated pubspec.yaml version:"
-          grep "^version:" pubspec.yaml
-          
-          # Create version info file for the app
-          mkdir -p lib/config
-          cat > lib/config/app_version.dart << EOF
-          // Auto-generated file - DO NOT EDIT
-          class AppVersion {
-            static const String versionName = '${{ needs.version.outputs.version_name }}';
-            static const int versionCode = ${{ needs.version.outputs.version_code }};
-            static const String buildNumber = '${{ github.run_number }}';
-            static const String gitSha = '${{ github.sha }}';
-            static const String buildDate = '$(date -u +"%Y-%m-%dT%H:%M:%SZ")';
-          }
-          EOF
+      - name: Build APK
+        run: flutter build apk --release
 
-      # Build different variants
-      - name: Build Release APK
+      - name: Prepare Release
+        id: prepare_release
+        run: |
+          VERSION=$(yq e '.version' pubspec.yaml)
+          VERSION_NAME=$(echo $VERSION | cut -d'+' -f1)
+          VERSION_CODE=$(echo $VERSION | cut -d'+' -f2)
+          TAG="v${VERSION_NAME}"
+          APK_NAME="tb_app_${VERSION_NAME}.apk"
+          mv build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/${APK_NAME}"
+          echo "version_name=${VERSION_NAME}" >> $GITHUB_OUTPUT
+          echo "version_code=${VERSION_CODE}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "apk_name=${APK_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
         env:
-          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          flutter build apk --release --build-name=${{ needs.version.outputs.version_name }} --build-number=${{ needs.version.outputs.version_code }}
+          gh release create ${{ steps.prepare_release.outputs.tag }} \
+            --title "Release ${{ steps.prepare_release.outputs.version_name }}" \
+            --notes "Build ${{ steps.prepare_release.outputs.version_code }}" || true
+          gh release upload ${{ steps.prepare_release.outputs.tag }} \
+            "build/app/outputs/flutter-apk/${{ steps.prepare_release.outputs.apk_name }}"
 
-      - name: Build Release Bundle (AAB)
-        env:
-          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+      - name: Install Firebase CLI and jq
         run: |
-          flutter build appbundle --release --build-name=${{ needs.version.outputs.version_name }} --build-number=${{ needs.version.outputs.version_code }}
+          curl -sL https://firebase.tools | bash
+          sudo apt-get update
+          sudo apt-get install -y jq
 
-      # Rename files with version
-      - name: Rename Build Files
-        run: |
-          cd build/app/outputs
-          
-          # Rename APK
-          mv apk/release/app-release.apk apk/release/turf-buddie-v${{ needs.version.outputs.version_name }}-${{ needs.version.outputs.version_code }}.apk
-          
-          # Rename AAB
-          mv bundle/release/app-release.aab bundle/release/turf-buddie-v${{ needs.version.outputs.version_name }}-${{ needs.version.outputs.version_code }}.aab
-
-      # Update Firebase Remote Config
       - name: Update Firebase Remote Config
         env:
-          GOOGLE_APPLICATION_CREDENTIALS: "./firebase-service-account.json"
-          FIREBASE_PROJECT_ID: "turf-buddies"
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
         run: |
-          # Create remote config update
-          cat > remote_config_update.json << EOF
-          {
-            "conditions": [],
-            "parameters": {
-              "app_version": {
-                "defaultValue": {
-                  "value": "${{ needs.version.outputs.version_name }}"
-                }
-              },
-              "app_version_code": {
-                "defaultValue": {
-                  "value": "${{ needs.version.outputs.version_code }}"
-                }
-              },
-              "force_update_version": {
-                "defaultValue": {
-                  "value": "${{ needs.version.outputs.version_name }}"
-                }
-              },
-              "minimum_supported_version": {
-                "defaultValue": {
-                  "value": "${{ needs.version.outputs.version_name }}"
-                }
-              },
-              "app_maintenance": {
-                "defaultValue": {
-                  "value": "false"
-                }
-              },
-              "update_message": {
-                "defaultValue": {
-                  "value": "A new version is available. Please update to continue."
-                }
-              },
-              "download_url_android": {
-                "defaultValue": {
-                  "value": "https://github.com/${{ github.repository }}/releases/latest"
-                }
-              },
-              "release_notes": {
-                "defaultValue": {
-                  "value": "${{ needs.version.outputs.changelog }}"
-                }
-              }
-            },
-            "version": {
-              "versionNumber": "$(date +%s)"
-            }
-          }
-          EOF
-          
-          # Update Firebase Remote Config
-          firebase --project=turf-buddies remoteconfig:set remote_config_update.json
-          
-          # Publish the changes
-          firebase --project=turf-buddies remoteconfig:publish
-
-      # Create Release
-      - name: Create GitHub Release
-        uses: ncipollo/release-action@v1
-        with:
-          artifacts: |
-            build/app/outputs/apk/release/*.apk
-            build/app/outputs/bundle/release/*.aab
-          tag: v${{ needs.version.outputs.version_name }}-${{ needs.version.outputs.version_code }}
-          name: Release v${{ needs.version.outputs.version_name }} (${{ needs.version.outputs.version_code }})
-          body: |
-            ## 🚀 Release v${{ needs.version.outputs.version_name }} (Build ${{ needs.version.outputs.version_code }})
-            
-            ### 📱 Download
-            - **APK**: turf-buddie-v${{ needs.version.outputs.version_name }}-${{ needs.version.outputs.version_code }}.apk
-            - **AAB**: turf-buddie-v${{ needs.version.outputs.version_name }}-${{ needs.version.outputs.version_code }}.aab
-            
-            ### 📋 What's New
-            ${{ needs.version.outputs.changelog }}
-            
-            ### 📊 Build Information
-            - **Version**: ${{ needs.version.outputs.version_name }}
-            - **Build Number**: ${{ needs.version.outputs.version_code }}
-            - **Git SHA**: ${{ github.sha }}
-            - **Built**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-            
-            ### 🔧 Technical Details
-            - Java Version: ${{ env.JAVA_VERSION }}
-            - Platform: Android
-          token: ${{ secrets.GITHUB_TOKEN }}
-          prerelease: false
-          draft: false
-
-      # Cleanup
-      - name: Cleanup
-        if: always()
-        run: |
-          rm -f firebase-service-account.json
-          rm -f android/app/turf-buddie-key.jks
-          rm -f remote_config_update.json
+          firebase use YOUR_FIREBASE_PROJECT_ID --token $FIREBASE_TOKEN
+          firebase remoteconfig:get -o template.json --token $FIREBASE_TOKEN
+          jq '.parameters.latest_version.defaultValue.value = "${{ steps.prepare_release.outputs.version_name }}"' template.json > temp.json
+          mv temp.json template.json
+          jq '.parameters.latest_apk_url.defaultValue.value = "https://github.com/${{ github.repository }}/releases/download/${{ steps.prepare_release.outputs.tag }}/${{ steps.prepare_release.outputs.apk_name }}"' template.json > temp.json
+          mv temp.json template.json
+          firebase deploy --only remoteconfig --token $FIREBASE_TOKEN
