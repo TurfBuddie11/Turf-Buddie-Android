@@ -2,7 +2,7 @@ name: Flutter CI/CD
 
 on:
   push:
-    branches: [ master ]
+    branches: [ main ]
 
 jobs:
   build:
@@ -28,20 +28,25 @@ jobs:
           sudo chmod +x /usr/bin/yq
 
       - name: Decode Keystore
-        run: base64 -d android/app/keystore.base64 > android/app/turf-buddie-key.jks
+        run: |
+          echo "Decoding keystore.base64 to android/app/turf-buddie-key.jks"
+          base64 -d android/app/keystore.base64 > android/app/turf-buddie-key.jks
+          ls -l android/app/turf-buddie-key.jks || echo "Keystore file creation failed"
 
       - name: Create key.properties
         run: |
+          echo "Generating key.properties"
           echo "storePassword=${{ secrets.STORE_PASSWORD }}" > android/key.properties
           echo "keyPassword=${{ secrets.KEY_PASSWORD }}" >> android/key.properties
           echo "keyAlias=turf-buddie-alias" >> android/key.properties
-          echo "storeFile=app/turf-buddie-key.jks" >> android/key.properties
+          echo "storeFile=android/app/turf-buddie-key.jks" >> android/key.properties
+          cat android/key.properties
 
       - name: Install dependencies
         run: flutter pub get
 
       - name: Build APK
-        run: flutter build apk --release
+        run: flutter build apk --release --no-tree-shake-icons
 
       - name: Prepare Release
         id: prepare_release
