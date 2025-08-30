@@ -54,13 +54,14 @@ jobs:
           fi
           BUILD_NUMBER=${{ github.run_number }}
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version_no_v=$VERSION_NO_V" >> $GITHUB_OUTPUT
           echo "build_number=$BUILD_NUMBER" >> $GITHUB_OUTPUT
           echo "Version: $VERSION, Build: $BUILD_NUMBER"
           echo "Version: $VERSION, Version for pubspec: $VERSION_NO_V, Build: $BUILD_NUMBER"
 
       - name: Update App Version
         run: |
-          sed -i "s/^version: .*/version: ${{ steps.version.outputs.version }}+${{ steps.version.outputs.build_number }}/" pubspec.yaml
+          sed -i "s/^version: .*/version: ${{ steps.version.outputs.version_no_v }}+${{ steps.version.outputs.build_number }}/" pubspec.yaml
           echo "Updated pubspec.yaml version to: ${{ steps.version.outputs.version_no_v }}+${{ steps.version.outputs.build_number }}"
 
       - name: Decode Keystore
