@@ -381,7 +381,6 @@ class TurfBookingDetailsScreen extends ConsumerWidget {
                 ),
               ),
               children: [
-                // Use CartoDB Positron tiles which are free and don't require API key
                 TileLayer(
                   urlTemplate:
                       'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',

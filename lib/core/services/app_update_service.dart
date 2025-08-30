@@ -1,4 +1,3 @@
-// lib/services/app_update_service.dart
 import 'package:flutter/material.dart';
 import 'package:firebase_remote_config/firebase_remote_config.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -6,8 +5,9 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:dio/dio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:open_filex/open_filex.dart';
-import 'dart:io';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'dart:io';
 
 class AppUpdateService {
   static final AppUpdateService _instance = AppUpdateService._internal();
@@ -28,10 +28,12 @@ class AppUpdateService {
       final remoteConfig = FirebaseRemoteConfig.instance;
       await remoteConfig.setConfigSettings(RemoteConfigSettings(
         fetchTimeout: const Duration(minutes: 1),
-        minimumFetchInterval: const Duration(minutes: 5),
+        minimumFetchInterval: const Duration(seconds: 0), // Set to 0 for testing
       ));
 
-      await remoteConfig.fetchAndActivate();
+      debugPrint('🔍 Fetching Remote Config...');
+      bool activated = await remoteConfig.fetchAndActivate();
+      debugPrint('Remote Config fetchAndActivate: ${activated ? "Success" : "Failed or used cached values"}');
 
       final packageInfo = await PackageInfo.fromPlatform();
       final currentVersion = 'v${packageInfo.version}';
@@ -39,29 +41,42 @@ class AppUpdateService {
       final forceUpdate = remoteConfig.getBool(_forceUpdateKey);
       final minVersion = remoteConfig.getString(_minVersionKey);
 
-      print('Current version: $currentVersion');
-      print('Latest version: $latestVersion');
-      print('Force update: $forceUpdate');
+      debugPrint('Current version: $currentVersion');
+      debugPrint('Latest version: $latestVersion');
+      debugPrint('Minimum supported version: $minVersion');
+      debugPrint('Force update: $forceUpdate');
+      debugPrint('All Remote Config values: ${remoteConfig.getAll().map((key, value) => MapEntry(key, value.asString()))}');
 
       // Check if current version is below minimum supported
       if (_isVersionLower(currentVersion, minVersion)) {
+        debugPrint('Triggering force update dialog (below minimum supported version)');
+        if (!context.mounted) return;
         _showForceUpdateDialog(context, remoteConfig, isUnsupported: true);
         return;
       }
 
-      // Check if update is available
       if (_isVersionLower(currentVersion, latestVersion)) {
+        debugPrint('Update available');
         if (forceUpdate) {
+          debugPrint('Triggering force update dialog');
+          if (!context.mounted) return;
           _showForceUpdateDialog(context, remoteConfig);
         } else {
+          debugPrint('Triggering optional update dialog');
+          if (!context.mounted) return;
           _showOptionalUpdateDialog(context, remoteConfig);
         }
       } else if (showNoUpdateDialog) {
+        debugPrint('No update needed, showing no-update dialog');
+        if (!context.mounted) return;
         _showNoUpdateDialog(context);
+      } else {
+        debugPrint('No update needed, no dialog shown');
       }
     } catch (e) {
-      print('Error checking for updates: $e');
+      debugPrint('Error checking for updates: $e');
       if (showNoUpdateDialog) {
+        if (!context.mounted) return;
         _showErrorDialog(context, 'Failed to check for updates: ${e.toString()}');
       }
     }
@@ -70,14 +85,12 @@ class AppUpdateService {
   bool _isVersionLower(String current, String latest) {
     if (current.isEmpty || latest.isEmpty) return false;
 
-    // Remove 'v' prefix if present
-    current = current.replaceFirst('v', '');
-    latest = latest.replaceFirst('v', '');
+    current = current.replaceFirst(RegExp(r'^v'), '');
+    latest = latest.replaceFirst(RegExp(r'^v'), '');
 
-    final currentParts = current.split('.').map(int.parse).toList();
-    final latestParts = latest.split('.').map(int.parse).toList();
+    final currentParts = current.split('.').map((part) => int.tryParse(part) ?? 0).toList();
+    final latestParts = latest.split('.').map((part) => int.tryParse(part) ?? 0).toList();
 
-    // Ensure both lists have the same length
     while (currentParts.length < latestParts.length) {
       currentParts.add(0);
     }
@@ -96,7 +109,7 @@ class AppUpdateService {
   void _showForceUpdateDialog(BuildContext context, FirebaseRemoteConfig config, {bool isUnsupported = false}) {
     final title = isUnsupported ? 'Update Required' : config.getString(_updateTitleKey);
     final message = isUnsupported
-        ? 'Your app version is no longer supported. Please update to continue using the app.'
+        ? 'Your app version is no longer supported. Please update to continue using Turf Buddie.'
         : config.getString(_updateMessageKey);
     final changelog = config.getString(_changelogKey);
 
@@ -107,29 +120,51 @@ class AppUpdateService {
         return PopScope(
           canPop: false,
           child: AlertDialog(
-            title: Row(
-              children: [
-                const Icon(Icons.system_update, color: Colors.red),
-                const SizedBox(width: 8),
-                Text(title),
-              ],
-            ),
-            content: SingleChildScrollView(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            backgroundColor: Colors.transparent,
+            content: Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [const Color(0xFF2ECC71), const Color(0xFF27AE60)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              padding: const EdgeInsets.all(20),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(message),
+                  Row(
+                    children: [
+                      const Icon(Icons.sports_soccer, color: Colors.white, size: 30),
+                      const SizedBox(width: 8),
+                      Text(
+                        title,
+                        style: GoogleFonts.poppins(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                          fontSize: 18,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    message,
+                    style: GoogleFonts.poppins(fontSize: 16, color: Colors.white),
+                  ),
                   const SizedBox(height: 16),
                   if (changelog.isNotEmpty) ...[
-                    const Text(
+                    Text(
                       'What\'s New:',
-                      style: TextStyle(fontWeight: FontWeight.bold),
+                      style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.white),
                     ),
                     const SizedBox(height: 8),
                     Text(
                       changelog.replaceAll('\\n', '\n'),
-                      style: const TextStyle(fontSize: 14),
+                      style: GoogleFonts.poppins(fontSize: 14, color: Colors.white70),
                     ),
                   ],
                 ],
@@ -138,11 +173,16 @@ class AppUpdateService {
             actions: [
               ElevatedButton.icon(
                 onPressed: () => _downloadAndInstallUpdate(context, config),
-                icon: const Icon(Icons.download),
-                label: const Text('Update Now'),
+                icon: const Icon(Icons.download, color: Colors.white),
+                label: Text(
+                  'Update Now',
+                  style: GoogleFonts.poppins(color: Colors.white),
+                ),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.green,
-                  foregroundColor: Colors.white,
+                  backgroundColor: Colors.black.withValues(alpha: 0.8),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  elevation: 5,
                 ),
               ),
             ],
@@ -158,8 +198,8 @@ class AppUpdateService {
     final changelog = config.getString(_changelogKey);
     final priority = config.getString(_updatePriorityKey);
 
-    Color priorityColor = Colors.blue;
-    IconData priorityIcon = Icons.info;
+    Color priorityColor;
+    IconData priorityIcon;
 
     switch (priority.toLowerCase()) {
       case 'high':
@@ -168,11 +208,12 @@ class AppUpdateService {
         priorityIcon = Icons.priority_high;
         break;
       case 'medium':
-        priorityColor = Colors.orange;
+        priorityColor = const Color(0xFFFFA726);
         priorityIcon = Icons.update;
         break;
       case 'low':
-        priorityColor = Colors.blue;
+      default:
+        priorityColor = const Color(0xFF2ECC71);
         priorityIcon = Icons.info;
         break;
     }
@@ -181,29 +222,51 @@ class AppUpdateService {
       context: context,
       builder: (BuildContext context) {
         return AlertDialog(
-          title: Row(
-            children: [
-              Icon(priorityIcon, color: priorityColor),
-              const SizedBox(width: 8),
-              Text(title),
-            ],
-          ),
-          content: SingleChildScrollView(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          backgroundColor: Colors.transparent,
+          content: Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [const Color(0xFF2ECC71), const Color(0xFF27AE60)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            padding: const EdgeInsets.all(20),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(message),
+                Row(
+                  children: [
+                    Icon(priorityIcon, color: Colors.white, size: 30),
+                    const SizedBox(width: 8),
+                    Text(
+                      title,
+                      style: GoogleFonts.poppins(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                        fontSize: 18,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  message,
+                  style: GoogleFonts.poppins(fontSize: 16, color: Colors.white),
+                ),
                 const SizedBox(height: 16),
                 if (changelog.isNotEmpty) ...[
-                  const Text(
+                  Text(
                     'What\'s New:',
-                    style: TextStyle(fontWeight: FontWeight.bold),
+                    style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.white),
                   ),
                   const SizedBox(height: 8),
                   Text(
                     changelog.replaceAll('\\n', '\n'),
-                    style: const TextStyle(fontSize: 14),
+                    style: GoogleFonts.poppins(fontSize: 14, color: Colors.white70),
                   ),
                 ],
               ],
@@ -212,18 +275,26 @@ class AppUpdateService {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Later'),
+              child: Text(
+                'Later',
+                style: GoogleFonts.poppins(color: Colors.white70),
+              ),
             ),
             ElevatedButton.icon(
               onPressed: () {
                 Navigator.of(context).pop();
                 _downloadAndInstallUpdate(context, config);
               },
-              icon: const Icon(Icons.download),
-              label: const Text('Update'),
+              icon: const Icon(Icons.download, color: Colors.white),
+              label: Text(
+                'Update',
+                style: GoogleFonts.poppins(color: Colors.white),
+              ),
               style: ElevatedButton.styleFrom(
-                backgroundColor: priorityColor,
-                foregroundColor: Colors.white,
+                backgroundColor: Colors.black.withValues(alpha: 0.8),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                elevation: 5,
               ),
             ),
           ],
@@ -237,18 +308,50 @@ class AppUpdateService {
       context: context,
       builder: (BuildContext context) {
         return AlertDialog(
-          title: const Row(
-            children: [
-              Icon(Icons.check_circle, color: Colors.green),
-              SizedBox(width: 8),
-              Text('Up to Date'),
-            ],
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          backgroundColor: Colors.transparent,
+          content: Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [const Color(0xFF2ECC71), const Color(0xFF27AE60)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.check_circle, color: Colors.white, size: 30),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Up to Date',
+                      style: GoogleFonts.poppins(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                        fontSize: 18,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'You are using the latest version of Turf Buddie!',
+                  style: GoogleFonts.poppins(fontSize: 16, color: Colors.white),
+                ),
+              ],
+            ),
           ),
-          content: const Text('You are using the latest version of Turf Buddie!'),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: const Text('OK'),
+              child: Text(
+                'OK',
+                style: GoogleFonts.poppins(color: Colors.white70),
+              ),
             ),
           ],
         );
@@ -261,18 +364,60 @@ class AppUpdateService {
       context: context,
       builder: (BuildContext context) {
         return AlertDialog(
-          title: const Row(
-            children: [
-              Icon(Icons.error, color: Colors.red),
-              SizedBox(width: 8),
-              Text('Error'),
-            ],
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          backgroundColor: Colors.transparent,
+          content: Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [const Color(0xFF2ECC71), const Color(0xFF27AE60)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.error, color: Colors.white, size: 30),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Error',
+                      style: GoogleFonts.poppins(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                        fontSize: 18,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  error,
+                  style: GoogleFonts.poppins(fontSize: 16, color: Colors.white),
+                ),
+              ],
+            ),
           ),
-          content: Text(error),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: const Text('OK'),
+              child: Text(
+                'OK',
+                style: GoogleFonts.poppins(color: Colors.white70),
+              ),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                checkForUpdates(context, showNoUpdateDialog: true);
+              },
+              child: Text(
+                'Retry',
+                style: GoogleFonts.poppins(color: Colors.white),
+              ),
             ),
           ],
         );
@@ -288,11 +433,10 @@ class AppUpdateService {
       return;
     }
 
-    // Check if we should use direct download or browser
     if (Platform.isAndroid && await _hasStoragePermission()) {
+      if (!context.mounted) return;
       _showDownloadDialog(context, downloadUrl);
     } else {
-      // Fallback to browser
       _launchUrl(downloadUrl);
     }
   }
@@ -323,6 +467,8 @@ class AppUpdateService {
     final uri = Uri.parse(url);
     if (await canLaunchUrl(uri)) {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } else {
+      debugPrint('Could not launch $url');
     }
   }
 }
@@ -336,16 +482,31 @@ class _DownloadDialog extends StatefulWidget {
   State<_DownloadDialog> createState() => _DownloadDialogState();
 }
 
-class _DownloadDialogState extends State<_DownloadDialog> {
+class _DownloadDialogState extends State<_DownloadDialog> with SingleTickerProviderStateMixin {
   double _progress = 0.0;
   bool _isDownloading = true;
   String _status = 'Preparing download...';
   String? _filePath;
+  late AnimationController _animationController;
+  late Animation<double> _bounceAnimation;
 
   @override
   void initState() {
     super.initState();
+    _animationController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1000),
+    )..repeat(reverse: true);
+    _bounceAnimation = Tween<double>(begin: 0, end: 10).animate(
+      CurvedAnimation(parent: _animationController, curve: Curves.easeInOut),
+    );
     _downloadFile();
+  }
+
+  @override
+  void dispose() {
+    _animationController.dispose();
+    super.dispose();
   }
 
   Future<void> _downloadFile() async {
@@ -388,7 +549,7 @@ class _DownloadDialogState extends State<_DownloadDialog> {
   Future<void> _installApk() async {
     if (_filePath != null) {
       final result = await OpenFilex.open(_filePath!);
-      print('Install result: ${result.message}');
+      debugPrint('Install result: ${result.message}');
     }
   }
 
@@ -397,39 +558,83 @@ class _DownloadDialogState extends State<_DownloadDialog> {
     return PopScope(
       canPop: !_isDownloading,
       child: AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.download),
-            SizedBox(width: 8),
-            Text('Downloading Update'),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (_isDownloading) ...[
-              LinearProgressIndicator(value: _progress),
-              const SizedBox(height: 16),
-            ],
-            Text(_status),
-            const SizedBox(height: 16),
-            if (!_isDownloading && _filePath != null)
-              ElevatedButton.icon(
-                onPressed: _installApk,
-                icon: const Icon(Icons.install_mobile),
-                label: const Text('Install Now'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.green,
-                  foregroundColor: Colors.white,
-                ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        backgroundColor: Colors.transparent,
+        content: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [const Color(0xFF2ECC71), const Color(0xFF27AE60)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  AnimatedBuilder(
+                    animation: _bounceAnimation,
+                    builder: (context, child) {
+                      return Transform.translate(
+                        offset: Offset(0, _bounceAnimation.value),
+                        child: const Icon(Icons.download, color: Colors.white, size: 30),
+                      );
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Downloading Update',
+                    style: GoogleFonts.poppins(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                      fontSize: 18,
+                    ),
+                  ),
+                ],
               ),
-          ],
+              const SizedBox(height: 16),
+              if (_isDownloading) ...[
+                LinearProgressIndicator(
+                  value: _progress,
+                  backgroundColor: Colors.white.withValues(alpha: 0.3),
+                  color: Colors.white,
+                ),
+                const SizedBox(height: 16),
+              ],
+              Text(
+                _status,
+                style: GoogleFonts.poppins(fontSize: 16, color: Colors.white),
+              ),
+              const SizedBox(height: 16),
+              if (!_isDownloading && _filePath != null)
+                ElevatedButton.icon(
+                  onPressed: _installApk,
+                  icon: const Icon(Icons.install_mobile, color: Colors.white),
+                  label: Text(
+                    'Install Now',
+                    style: GoogleFonts.poppins(color: Colors.white),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.black.withValues(alpha: 0.8),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    elevation: 5,
+                  ),
+                ),
+            ],
+          ),
         ),
         actions: [
           if (!_isDownloading)
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Close'),
+              child: Text(
+                'Cancel',
+                style: GoogleFonts.poppins(color: Colors.white70),
+              ),
             ),
         ],
       ),
@@ -437,7 +642,6 @@ class _DownloadDialogState extends State<_DownloadDialog> {
   }
 }
 
-// Extension to easily access the update service
 extension AppUpdateExtension on BuildContext {
   Future<void> checkForUpdates({bool showNoUpdateDialog = false}) {
     return AppUpdateService().checkForUpdates(this, showNoUpdateDialog: showNoUpdateDialog);
