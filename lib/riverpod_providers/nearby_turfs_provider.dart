@@ -2,8 +2,11 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 
-final nearbyTurfsProvider = FutureProvider.family<List<DocumentSnapshot>, Position>((ref, position) async {
-  QuerySnapshot snapshot = await FirebaseFirestore.instance.collection('Turfs').get();
+final nearbyTurfsProvider =
+    FutureProvider.family<List<DocumentSnapshot>, Position>(
+        (ref, position) async {
+  QuerySnapshot snapshot =
+      await FirebaseFirestore.instance.collection('Turfs').get();
 
   List<DocumentSnapshot> nearbyTurfs = [];
   for (var doc in snapshot.docs) {
