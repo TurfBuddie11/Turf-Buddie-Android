@@ -207,10 +207,26 @@ jobs:
           echo "🔄 Updating Firebase Remote Config..."
           
           # Get current Remote Config to preserve etag
+          echo "📡 Fetching current Remote Config..."
           CURRENT_CONFIG=$(curl -s -H "Authorization: Bearer $ACCESS_TOKEN" \
             "https://firebaseremoteconfig.googleapis.com/v1/projects/$FIREBASE_PROJECT_ID/remoteConfig")
           
-          ETAG=$(echo $CURRENT_CONFIG | jq -r '.etag')
+          echo "📄 Current config response: $CURRENT_CONFIG"
+          
+          # Check if we got a valid response
+          if echo "$CURRENT_CONFIG" | jq . > /dev/null 2>&1; then
+            ETAG=$(echo $CURRENT_CONFIG | jq -r '.etag // "1"')
+            echo "✅ Got ETag: $ETAG"
+          else
+            echo "⚠️  Invalid JSON response, using default ETag"
+            ETAG="1"
+          fi
+          
+          # If ETag is still null or empty, use default
+          if [[ "$ETAG" == "null" || -z "$ETAG" ]]; then
+            ETAG="1"
+            echo "🔄 Using default ETag: $ETAG"
+          fi
           
           # Create updated config
           cat > updated-config.json << EOF
@@ -280,55 +296,97 @@ jobs:
           }
           EOF
           
-          # Update Remote Config
-          RESPONSE=$(curl -s -w "%{http_code}" -X PUT \
-            -H "Authorization: Bearer $ACCESS_TOKEN" \
-            -H "Content-Type: application/json" \
-            -H "If-Match: $ETAG" \
-            -d @updated-config.json \
-            "https://firebaseremoteconfig.googleapis.com/v1/projects/$FIREBASE_PROJECT_ID/remoteConfig")
+          # Update Remote Config with retry logic
+          echo "🚀 Updating Remote Config..."
           
-          HTTP_CODE="${RESPONSE: -3}"
-          RESPONSE_BODY="${RESPONSE%???}"
+          for attempt in 1 2 3; do
+            echo "Attempt $attempt/3..."
           
-          if [[ "$HTTP_CODE" == "200" ]]; then
-            echo "✅ Firebase Remote Config updated successfully!"
-            echo "📱 App version: ${{ steps.version.outputs.version }}"
-            echo "🔗 Download URL: https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/turf-buddie-${{ steps.version.outputs.version }}.apk"
-          
-            # Publish the updated config
-            curl -s -X POST \
+            RESPONSE=$(curl -s -w "%{http_code}" -X PUT \
               -H "Authorization: Bearer $ACCESS_TOKEN" \
-              "https://firebaseremoteconfig.googleapis.com/v1/projects/$FIREBASE_PROJECT_ID/remoteConfig:publish"
+              -H "Content-Type: application/json" \
+              -H "If-Match: $ETAG" \
+              -d @updated-config.json \
+              "https://firebaseremoteconfig.googleapis.com/v1/projects/$FIREBASE_PROJECT_ID/remoteConfig")
           
-            echo "✅ Remote Config published and live!"
+            HTTP_CODE="${RESPONSE: -3}"
+            RESPONSE_BODY="${RESPONSE%???}"
           
-            # Log what was updated for debugging
-            echo ""
-            echo "📋 Firebase Remote Config Updated With:"
-            echo "   • latest_app_version: ${{ steps.version.outputs.version }}"
-            echo "   • app_download_url: GitHub release URL"
-            echo "   • force_update_required: false"
-            echo "   • minimum_supported_version: v1.0.0"
-            echo "   • update_message: User-friendly update prompt"
-            echo "   • apk_size_bytes: ${{ env.APK_SIZE }}"
-            echo ""
-            echo "🚀 Users will see update dialog next time they open the app!"
-          
-          else
-            echo "❌ Failed to update Firebase Remote Config"
             echo "HTTP Code: $HTTP_CODE"
-            echo "Response: $RESPONSE_BODY"
           
-            # Try to get more details about the error
-            echo ""
-            echo "🔍 Debugging Information:"
-            echo "Project ID: $FIREBASE_PROJECT_ID"
-            echo "ETag: $ETAG"
-            echo "Access Token Length: ${#ACCESS_TOKEN}"
+            if [[ "$HTTP_CODE" == "200" ]]; then
+              echo "✅ Firebase Remote Config updated successfully on attempt $attempt!"
+              echo "📱 App version: ${{ steps.version.outputs.version }}"
+              echo "🔗 Download URL: https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/turf-buddie-${{ steps.version.outputs.version }}.apk"
           
-            exit 1
-          fi
+              # Publish the updated config
+              echo "📤 Publishing Remote Config..."
+              PUBLISH_RESPONSE=$(curl -s -w "%{http_code}" -X POST \
+                -H "Authorization: Bearer $ACCESS_TOKEN" \
+                "https://firebaseremoteconfig.googleapis.com/v1/projects/$FIREBASE_PROJECT_ID/remoteConfig:publish")
+          
+              PUBLISH_CODE="${PUBLISH_RESPONSE: -3}"
+          
+              if [[ "$PUBLISH_CODE" == "200" ]]; then
+                echo "✅ Remote Config published and live!"
+              else
+                echo "⚠️  Remote Config updated but publish failed (Code: $PUBLISH_CODE)"
+                echo "Config is still updated, just not published yet"
+              fi
+          
+              # Log what was updated for debugging
+              echo ""
+              echo "📋 Firebase Remote Config Updated With:"
+              echo "   • latest_app_version: ${{ steps.version.outputs.version }}"
+              echo "   • app_download_url: GitHub release URL"
+              echo "   • force_update_required: false"
+              echo "   • minimum_supported_version: v1.0.0"
+              echo "   • update_message: User-friendly update prompt"
+              echo "   • apk_size_bytes: ${{ env.APK_SIZE }}"
+              echo ""
+              echo "🚀 Users will see update dialog next time they open the app!"
+          
+              break
+          
+            elif [[ "$HTTP_CODE" == "412" || "$HTTP_CODE" == "409" ]]; then
+              echo "⚠️  ETag mismatch (Code: $HTTP_CODE), refetching config..."
+          
+              # Refetch current config for new ETag
+              CURRENT_CONFIG=$(curl -s -H "Authorization: Bearer $ACCESS_TOKEN" \
+                "https://firebaseremoteconfig.googleapis.com/v1/projects/$FIREBASE_PROJECT_ID/remoteConfig")
+          
+              if echo "$CURRENT_CONFIG" | jq . > /dev/null 2>&1; then
+                NEW_ETAG=$(echo $CURRENT_CONFIG | jq -r '.etag // "1"')
+                echo "🔄 New ETag: $NEW_ETAG"
+                ETAG="$NEW_ETAG"
+              else
+                echo "❌ Failed to get new ETag, using attempt number as ETag"
+                ETAG="$attempt"
+              fi
+          
+              if [[ $attempt == 3 ]]; then
+                echo "❌ Failed to update after 3 attempts"
+                echo "Response: $RESPONSE_BODY"
+                exit 1
+              fi
+          
+            else
+              echo "❌ Failed to update Firebase Remote Config"
+              echo "HTTP Code: $HTTP_CODE"
+              echo "Response: $RESPONSE_BODY"
+          
+              if [[ $attempt == 3 ]]; then
+                echo ""
+                echo "🔍 Final Debugging Information:"
+                echo "Project ID: $FIREBASE_PROJECT_ID"
+                echo "ETag: $ETAG"
+                echo "Access Token Length: ${#ACCESS_TOKEN}"
+                exit 1
+              fi
+            fi
+          
+            sleep 2
+          done
 
       - name: Workflow Summary
         if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
