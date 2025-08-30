@@ -1,134 +1,234 @@
-name: Flutter CI/CD
+name: "Build & Release"
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - master
+      - main
+    tags:
+      - 'v*'
   pull_request:
-    branches: [ main ]
+    branches:
+      - master
+      - main
+
+
 
 jobs:
   build:
+    name: Build & Release
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Set up Java
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
+          distribution: 'zulu'
           java-version: '17'
-          distribution: 'temurin'
 
-      - name: Set up Flutter
+      - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
+          architecture: x64
           cache: true
 
-      - name: Install yq
-        run: |
-          sudo wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq
-          sudo chmod +x /usr/bin/yq
+      - name: Get Flutter Dependencies
+        run: flutter pub get
 
-      - name: Verify keystore file exists
+      - name: Generate Version Info
+        id: version
         run: |
-          if [ ! -f "android/app/keystore.base64" ]; then
-            echo "Error: keystore.base64 file not found in android/app/"
-            exit 1
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION="v1.0.${{ github.run_number }}"
           fi
+          BUILD_NUMBER=${{ github.run_number }}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "build_number=$BUILD_NUMBER" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION, Build: $BUILD_NUMBER"
+
+      - name: Update App Version
+        run: |
+          sed -i "s/^version: .*/version: ${{ steps.version.outputs.version }}+${{ steps.version.outputs.build_number }}/" pubspec.yaml
+          echo "Updated pubspec.yaml version"
 
       - name: Decode Keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
-          echo "Decoding keystore.base64 to android/app/turf-buddie-key.jks"
-          base64 -d android/app/keystore.base64 > android/app/turf-buddie-key.jks
-          ls -l android/app/turf-buddie-key.jks || echo "Keystore file creation failed"
+          echo "$KEYSTORE_BASE64" | base64 -d > android/app/turf-buddie-key.jks
+          echo "Keystore decoded successfully"
 
       - name: Create key.properties
         run: |
-          echo "Generating key.properties"
           echo "storePassword=${{ secrets.STORE_PASSWORD }}" > android/key.properties
           echo "keyPassword=${{ secrets.KEY_PASSWORD }}" >> android/key.properties
-          echo "keyAlias=turf-buddie-alias" >> android/key.properties
+          echo "keyAlias=${{ secrets.KEY_ALIAS }}" >> android/key.properties
           echo "storeFile=turf-buddie-key.jks" >> android/key.properties
-          echo "Key properties created:"
-          cat android/key.properties
 
-      - name: Install dependencies
-        run: flutter pub get
-
-      - name: Run tests (optional)
-        run: flutter test
-        continue-on-error: true
-
-      - name: Build APK
-        run: flutter build apk --release --no-tree-shake-icons
-
-      - name: Prepare Release
-        id: prepare_release
+      - name: Build Release APK
         run: |
-          VERSION=$(yq e '.version' pubspec.yaml)
-          VERSION_NAME=$(echo $VERSION | cut -d'+' -f1)
-          VERSION_CODE=$(echo $VERSION | cut -d'+' -f2)
-          TAG="v${VERSION_NAME}"
-          APK_NAME="tb_app_${VERSION_NAME}.apk"
+          flutter build apk --release --build-number=${{ steps.version.outputs.build_number }}
+          echo "APK built successfully"
+
+      - name: Build App Bundle
+        run: |
+          flutter build appbundle --release --build-number=${{ steps.version.outputs.build_number }}
+          echo "App Bundle built successfully"
+
+      - name: Rename APK
+        run: |
+          mkdir -p release-files
+          cp build/app/outputs/flutter-apk/app-release.apk release-files/turf-buddie-${{ steps.version.outputs.version }}.apk
+          cp build/app/outputs/bundle/release/app-release.aab release-files/turf-buddie-${{ steps.version.outputs.version }}.aab
           
-          # Create output directory if it doesn't exist
-          mkdir -p build/app/outputs/flutter-apk/
+          # Create version info file for Firebase Remote Config
+          cat > release-files/version-info.json << EOF
+          {
+            "version": "${{ steps.version.outputs.version }}",
+            "build_number": "${{ steps.version.outputs.build_number }}",
+            "release_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "download_url": "https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/turf-buddie-${{ steps.version.outputs.version }}.apk",
+            "changelog": "Latest updates and improvements",
+            "minimum_supported_version": "v1.0.0",
+            "force_update": false
+          }
+          EOF
+
+      - name: Generate APK Info
+        run: |
+          APK_SIZE=$(stat -c%s "release-files/turf-buddie-${{ steps.version.outputs.version }}.apk")
+          APK_SHA256=$(sha256sum "release-files/turf-buddie-${{ steps.version.outputs.version }}.apk" | cut -d' ' -f1)
           
-          # Move and rename APK
-          mv build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/${APK_NAME}"
+          echo "APK_SIZE=$APK_SIZE" >> $GITHUB_ENV
+          echo "APK_SHA256=$APK_SHA256" >> $GITHUB_ENV
           
-          # Set outputs
-          echo "version_name=${VERSION_NAME}" >> $GITHUB_OUTPUT
-          echo "version_code=${VERSION_CODE}" >> $GITHUB_OUTPUT
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "apk_name=${APK_NAME}" >> $GITHUB_OUTPUT
-          
-          echo "Prepared release: ${TAG} with APK: ${APK_NAME}"
+          echo "APK Size: $APK_SIZE bytes"
+          echo "APK SHA256: $APK_SHA256"
 
       - name: Create GitHub Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Delete existing release/tag if it exists
-          gh release delete ${{ steps.prepare_release.outputs.tag }} --yes || true
-          git tag -d ${{ steps.prepare_release.outputs.tag }} || true
-          git push origin --delete ${{ steps.prepare_release.outputs.tag }} || true
-          
-          # Create new release
-          gh release create ${{ steps.prepare_release.outputs.tag }} \
-            --title "Release ${{ steps.prepare_release.outputs.version_name }}" \
-            --notes "Build ${{ steps.prepare_release.outputs.version_code }}" \
-            "build/app/outputs/flutter-apk/${{ steps.prepare_release.outputs.apk_name }}"
-
-      - name: Install Firebase CLI
-        run: |
-          curl -sL https://firebase.tools | bash
-          sudo apt-get update
-          sudo apt-get install -y jq
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "release-files/*"
+          tag: ${{ steps.version.outputs.version }}
+          name: "Release ${{ steps.version.outputs.version }}"
+          body: |
+            ## 🚀 Turf Buddie ${{ steps.version.outputs.version }}
+            
+            **Build Information:**
+            - Version: `${{ steps.version.outputs.version }}`
+            - Build Number: `${{ steps.version.outputs.build_number }}`
+            - Build Date: `${{ github.event.head_commit.timestamp }}`
+            - Commit: [`${{ github.sha }}`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
+            
+            **Download:**
+            - 📱 [Download APK](https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/turf-buddie-${{ steps.version.outputs.version }}.apk) (Size: ${{ env.APK_SIZE }} bytes)
+            - 🔒 SHA256: `${{ env.APK_SHA256 }}`
+            
+            **For Firebase Remote Config:**
+            ```json
+            {
+              "latest_version": "${{ steps.version.outputs.version }}",
+              "download_url": "https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/turf-buddie-${{ steps.version.outputs.version }}.apk",
+              "force_update": false,
+              "minimum_version": "v1.0.0"
+            }
+            ```
+            
+            ---
+            
+            ### 📋 What's New
+            - Latest updates and improvements
+            - Bug fixes and performance enhancements
+            
+            ### 🔄 How to Update
+            1. Open the Turf Buddie app
+            2. If an update notification appears, tap "Update"
+            3. The app will download and install the latest version
+            
+            > **Note:** This is a direct APK release. Enable "Install from Unknown Sources" if prompted.
+          token: ${{ secrets.TOKEN }}
+          draft: false
+          prerelease: false
+          makeLatest: true
+          allowUpdates: true
 
       - name: Update Firebase Remote Config
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
         env:
-          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+          FIREBASE_SERVICE_ACCOUNT_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
         run: |
-          # Replace YOUR_FIREBASE_PROJECT_ID with your actual project ID
-          firebase use default --token $FIREBASE_TOKEN
+          if [[ -n "$FIREBASE_SERVICE_ACCOUNT_KEY" && -n "$FIREBASE_PROJECT_ID" ]]; then
+            echo "Setting up Firebase CLI..."
+            npm install -g firebase-tools
           
-          # Get current remote config
-          firebase remoteconfig:get -o template.json --token $FIREBASE_TOKEN
+            echo "$FIREBASE_SERVICE_ACCOUNT_KEY" > firebase-service-account.json
           
-          # Update latest_version parameter
-          jq --arg version "${{ steps.prepare_release.outputs.version_name }}" \
-            '.parameters.latest_version.defaultValue.value = $version' template.json > temp1.json
+            export GOOGLE_APPLICATION_CREDENTIALS="firebase-service-account.json"
+            firebase use $FIREBASE_PROJECT_ID
           
-          # Update latest_apk_url parameter
-          jq --arg url "https://github.com/${{ github.repository }}/releases/download/${{ steps.prepare_release.outputs.tag }}/${{ steps.prepare_release.outputs.apk_name }}" \
-            '.parameters.latest_apk_url.defaultValue.value = $url' temp1.json > temp2.json
+            echo "Updating Remote Config..."
           
-          # Deploy updated config
-          mv temp2.json template.json
-          firebase deploy --only remoteconfig --token $FIREBASE_TOKEN
+            # Create the remote config update
+            cat > remote-config-update.json << EOF
+          {
+            "parameters": {
+              "latest_app_version": {
+                "defaultValue": {
+                  "value": "${{ steps.version.outputs.version }}"
+                }
+              },
+              "app_download_url": {
+                "defaultValue": {
+                  "value": "https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/turf-buddie-${{ steps.version.outputs.version }}.apk"
+                }
+              },
+              "force_update_required": {
+                "defaultValue": {
+                  "value": "false"
+                }
+              },
+              "minimum_supported_version": {
+                "defaultValue": {
+                  "value": "v1.0.0"
+                }
+              },
+              "update_message": {
+                "defaultValue": {
+                  "value": "A new version of Turf Buddie is available! Update now for the latest features and improvements."
+                }
+              }
+            },
+            "version": {
+              "versionNumber": "${{ github.run_number }}"
+            }
+          }
+          EOF
           
-          # Cleanup
-          rm -f temp1.json temp2.json template.json
+            # Update Firebase Remote Config
+            firebase remoteconfig:set remote-config-update.json
+            echo "✅ Firebase Remote Config updated successfully!"
+          
+            # Cleanup
+            rm -f firebase-service-account.json
+          else
+            echo "⚠️  Firebase credentials not found. Manual Remote Config update required."
+            echo "📄 Use the version-info.json file from the release artifacts to manually update Firebase Remote Config."
+            echo "🔗 Required secrets: FIREBASE_SERVICE_ACCOUNT_KEY, FIREBASE_PROJECT_ID"
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f android/app/turf-buddie-key.jks
+          rm -f android/key.properties
+          echo "Cleanup completed"
