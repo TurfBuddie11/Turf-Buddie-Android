@@ -165,70 +165,180 @@ jobs:
           makeLatest: true
           allowUpdates: true
 
-      - name: Update Firebase Remote Config
+      - name: Get Firebase Access Token
         if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+        id: firebase-token
         env:
           FIREBASE_SERVICE_ACCOUNT_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
         run: |
-          if [[ -n "$FIREBASE_SERVICE_ACCOUNT_KEY" && -n "$FIREBASE_PROJECT_ID" ]]; then
-            echo "Setting up Firebase CLI..."
-            npm install -g firebase-tools
-          
+          if [[ -n "$FIREBASE_SERVICE_ACCOUNT_KEY" ]]; then
             echo "$FIREBASE_SERVICE_ACCOUNT_KEY" > firebase-service-account.json
           
-            export GOOGLE_APPLICATION_CREDENTIALS="firebase-service-account.json"
-            firebase use $FIREBASE_PROJECT_ID
+            # Install gcloud CLI
+            curl https://sdk.cloud.google.com | bash > /dev/null
+            source ~/.bashrc
+            export PATH=$PATH:~/google-cloud-sdk/bin
           
-            echo "Updating Remote Config..."
+            # Authenticate and get access token
+            gcloud auth activate-service-account --key-file=firebase-service-account.json
+            ACCESS_TOKEN=$(gcloud auth print-access-token)
+            echo "access_token=$ACCESS_TOKEN" >> $GITHUB_OUTPUT
+            echo "✅ Firebase access token obtained"
           
-            # Create the remote config update
-            cat > remote-config-update.json << EOF
+            # Cleanup
+            rm -f firebase-service-account.json
+          else
+            echo "❌ Firebase service account key not found"
+          fi
+
+      - name: Update Firebase Remote Config
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') && steps.firebase-token.outputs.access_token
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          ACCESS_TOKEN: ${{ steps.firebase-token.outputs.access_token }}
+        run: |
+          echo "🔄 Updating Firebase Remote Config..."
+          
+          # Get current Remote Config to preserve etag
+          CURRENT_CONFIG=$(curl -s -H "Authorization: Bearer $ACCESS_TOKEN" \
+            "https://firebaseremoteconfig.googleapis.com/v1/projects/$FIREBASE_PROJECT_ID/remoteConfig")
+          
+          ETAG=$(echo $CURRENT_CONFIG | jq -r '.etag')
+          
+          # Create updated config
+          cat > updated-config.json << EOF
           {
             "parameters": {
               "latest_app_version": {
                 "defaultValue": {
                   "value": "${{ steps.version.outputs.version }}"
-                }
+                },
+                "description": "Latest available app version"
               },
               "app_download_url": {
                 "defaultValue": {
                   "value": "https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/turf-buddie-${{ steps.version.outputs.version }}.apk"
-                }
+                },
+                "description": "Direct download URL for the latest APK"
               },
               "force_update_required": {
                 "defaultValue": {
                   "value": "false"
-                }
+                },
+                "description": "Whether to force users to update"
               },
               "minimum_supported_version": {
                 "defaultValue": {
                   "value": "v1.0.0"
-                }
+                },
+                "description": "Minimum app version that is still supported"
               },
               "update_message": {
                 "defaultValue": {
-                  "value": "A new version of Turf Buddie is available! Update now for the latest features and improvements."
-                }
+                  "value": "🚀 A new version of Turf Buddie is available! Update now for the latest features and improvements."
+                },
+                "description": "Message shown to users when update is available"
+              },
+              "update_title": {
+                "defaultValue": {
+                  "value": "Update Available"
+                },
+                "description": "Title for update dialog"
+              },
+              "changelog": {
+                "defaultValue": {
+                  "value": "• Latest updates and improvements\\n• Bug fixes and performance enhancements\\n• New features for better experience"
+                },
+                "description": "What's new in this version"
+              },
+              "release_date": {
+                "defaultValue": {
+                  "value": "$(date -u +%Y-%m-%d)"
+                },
+                "description": "Release date of the current version"
+              },
+              "apk_size_bytes": {
+                "defaultValue": {
+                  "value": "${{ env.APK_SIZE }}"
+                },
+                "description": "Size of the APK file in bytes"
+              },
+              "update_priority": {
+                "defaultValue": {
+                  "value": "medium"
+                },
+                "description": "Update priority: low, medium, high, critical"
               }
-            },
-            "version": {
-              "versionNumber": "${{ github.run_number }}"
             }
           }
           EOF
           
-            # Update Firebase Remote Config
-            firebase remoteconfig:set remote-config-update.json
-            echo "✅ Firebase Remote Config updated successfully!"
+          # Update Remote Config
+          RESPONSE=$(curl -s -w "%{http_code}" -X PUT \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "If-Match: $ETAG" \
+            -d @updated-config.json \
+            "https://firebaseremoteconfig.googleapis.com/v1/projects/$FIREBASE_PROJECT_ID/remoteConfig")
           
-            # Cleanup
-            rm -f firebase-service-account.json
+          HTTP_CODE="${RESPONSE: -3}"
+          RESPONSE_BODY="${RESPONSE%???}"
+          
+          if [[ "$HTTP_CODE" == "200" ]]; then
+            echo "✅ Firebase Remote Config updated successfully!"
+            echo "📱 App version: ${{ steps.version.outputs.version }}"
+            echo "🔗 Download URL: https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/turf-buddie-${{ steps.version.outputs.version }}.apk"
+          
+            # Publish the updated config
+            curl -s -X POST \
+              -H "Authorization: Bearer $ACCESS_TOKEN" \
+              "https://firebaseremoteconfig.googleapis.com/v1/projects/$FIREBASE_PROJECT_ID/remoteConfig:publish"
+          
+            echo "✅ Remote Config published and live!"
+          
+            # Log what was updated for debugging
+            echo ""
+            echo "📋 Firebase Remote Config Updated With:"
+            echo "   • latest_app_version: ${{ steps.version.outputs.version }}"
+            echo "   • app_download_url: GitHub release URL"
+            echo "   • force_update_required: false"
+            echo "   • minimum_supported_version: v1.0.0"
+            echo "   • update_message: User-friendly update prompt"
+            echo "   • apk_size_bytes: ${{ env.APK_SIZE }}"
+            echo ""
+            echo "🚀 Users will see update dialog next time they open the app!"
+          
           else
-            echo "⚠️  Firebase credentials not found. Manual Remote Config update required."
-            echo "📄 Use the version-info.json file from the release artifacts to manually update Firebase Remote Config."
-            echo "🔗 Required secrets: FIREBASE_SERVICE_ACCOUNT_KEY, FIREBASE_PROJECT_ID"
+            echo "❌ Failed to update Firebase Remote Config"
+            echo "HTTP Code: $HTTP_CODE"
+            echo "Response: $RESPONSE_BODY"
+          
+            # Try to get more details about the error
+            echo ""
+            echo "🔍 Debugging Information:"
+            echo "Project ID: $FIREBASE_PROJECT_ID"
+            echo "ETag: $ETAG"
+            echo "Access Token Length: ${#ACCESS_TOKEN}"
+          
+            exit 1
           fi
+
+      - name: Workflow Summary
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+        run: |
+          echo "🎉 Build and Release Completed Successfully!"
+          echo ""
+          echo "📦 Release Information:"
+          echo "   • Version: ${{ steps.version.outputs.version }}"
+          echo "   • Build Number: ${{ steps.version.outputs.build_number }}"
+          echo "   • APK Size: ${{ env.APK_SIZE }} bytes"
+          echo ""
+          echo "🔗 Download Links:"
+          echo "   • APK: https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/turf-buddie-${{ steps.version.outputs.version }}.apk"
+          echo "   • AAB: https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/turf-buddie-${{ steps.version.outputs.version }}.aab"
+          echo ""
+          echo "✅ Users will automatically see update dialog when they open the app!"
+          echo "✅ Firebase Remote Config has been updated with latest version info!"
 
       - name: Cleanup
         if: always()

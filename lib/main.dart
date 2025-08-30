@@ -1,10 +1,12 @@
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_remote_config/firebase_remote_config.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_native_splash/flutter_native_splash.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:sizer/sizer.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:tb_web/core/services/app_update_service.dart';
 import 'package:tb_web/screens/authentication_screens/set_started_screen.dart';
 import 'package:tb_web/screens/controller_screens/controller_screen.dart';
 import 'package:tb_web/widgets/update_dialog.dart';
@@ -13,7 +15,7 @@ import 'firebase_options.dart';
 
 void main() async {
   WidgetsBinding widgetsFlutterBinding =
-      WidgetsFlutterBinding.ensureInitialized();
+  WidgetsFlutterBinding.ensureInitialized();
   FlutterNativeSplash.preserve(widgetsBinding: widgetsFlutterBinding);
 
   bool isLoggedIn = false;
@@ -21,7 +23,24 @@ void main() async {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
-    await FirebaseService.initialize();
+
+    // Initialize Remote Config with defaults
+    final remoteConfig = FirebaseRemoteConfig.instance;
+    await remoteConfig.setConfigSettings(RemoteConfigSettings(
+      fetchTimeout: const Duration(minutes: 1),
+      minimumFetchInterval: const Duration(minutes: 5),
+    ));
+
+    await remoteConfig.setDefaults({
+      'latest_app_version': 'v1.0.0',
+      'app_download_url': '',
+      'force_update_required': false,
+      'minimum_supported_version': 'v1.0.0',
+      'update_message': 'A new version is available!',
+      'update_title': 'Update Available',
+      'changelog': 'Bug fixes and improvements',
+      'update_priority': 'medium',
+    });
 
     final FlutterSecureStorage storage = const FlutterSecureStorage();
     await _requestPermissions();
@@ -37,9 +56,21 @@ void main() async {
 
 Future<void> _requestPermissions() async {
   try {
-    var status = await Permission.location.status;
-    if (status.isDenied || status.isPermanentlyDenied) {
+    // Request location permission
+    var locationStatus = await Permission.location.status;
+    if (locationStatus.isDenied || locationStatus.isPermanentlyDenied) {
       await Permission.location.request();
+    }
+
+    // Request storage permission for APK downloads (Android)
+    var storageStatus = await Permission.storage.status;
+    if (storageStatus.isDenied) {
+      await Permission.storage.request();
+    }
+
+    // For Android 11+ (API 30+), request manage external storage if needed
+    if (await Permission.manageExternalStorage.isDenied) {
+      await Permission.manageExternalStorage.request();
     }
   } catch (e) {
     debugPrint('Permission request error: $e');
@@ -58,24 +89,16 @@ class _MyAppState extends State<MyApp> {
   @override
   void initState() {
     super.initState();
-    _checkForUpdates();
-  }
 
-  Future<void> _checkForUpdates() async {
-    await Future.delayed(const Duration(seconds: 2));
-
-    try {
-      bool updateAvailable = await FirebaseService.checkForUpdate();
-      if (updateAvailable && mounted) {
-        showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (context) => const UpdateDialog(),
-        );
-      }
-    } catch (e) {
-      debugPrint('Update check error: $e');
-    }
+    // Check for updates after app initialization
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Future.delayed(const Duration(seconds: 3), () {
+        if (mounted) {
+          debugPrint('🔍 Checking for app updates...');
+          context.checkForUpdates();
+        }
+      });
+    });
   }
 
   @override
