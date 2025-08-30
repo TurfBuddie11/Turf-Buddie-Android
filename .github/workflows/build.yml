@@ -47,18 +47,21 @@ jobs:
         run: |
           if [[ $GITHUB_REF == refs/tags/* ]]; then
             VERSION=${GITHUB_REF#refs/tags/}
+            VERSION_NO_V=${VERSION#v}
           else
             VERSION="v1.0.${{ github.run_number }}"
+            VERSION_NO_V="1.0.${{ github.run_number }}"
           fi
           BUILD_NUMBER=${{ github.run_number }}
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "build_number=$BUILD_NUMBER" >> $GITHUB_OUTPUT
           echo "Version: $VERSION, Build: $BUILD_NUMBER"
+          echo "Version: $VERSION, Version for pubspec: $VERSION_NO_V, Build: $BUILD_NUMBER"
 
       - name: Update App Version
         run: |
           sed -i "s/^version: .*/version: ${{ steps.version.outputs.version }}+${{ steps.version.outputs.build_number }}/" pubspec.yaml
-          echo "Updated pubspec.yaml version"
+          echo "Updated pubspec.yaml version to: ${{ steps.version.outputs.version_no_v }}+${{ steps.version.outputs.build_number }}"
 
       - name: Decode Keystore
         env:
